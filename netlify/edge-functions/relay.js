@@ -1,77 +1,68 @@
-const TARGET_BASE = (Netlify.env.get("TARGET_DOMAIN") || "").replace(/\/$/, "");
+/**
+ * Netlify Edge Function - Stealth v23.0
+ * Optimized for: MCI, Irancell, Samantel, Asiatech
+ */
 
-const STRIP_HEADERS = new Set([
-  "host",
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-  "forwarded",
-  "x-forwarded-host",
-  "x-forwarded-proto",
-  "x-forwarded-port",
-]);
+export default async (request, context) => {
+  const url = new URL(request.url);
+  
+  // Settings from Netlify Environment Variables
+  const TARGET = (Deno.env.get("TARGET_DOMAIN") || "").replace(/\/$/, "");
+  const SECRET_PATH = Deno.env.get("SECRET_PATH") || "p4r34m"; 
+  const FAKE_SNI = Deno.env.get("FAKE_SNI_HOST") || "react.dev";
 
-export default async function handler(request) {
-  if (!TARGET_BASE) {
-    return new Response("Misconfigured: TARGET_DOMAIN is not set", { status: 500 });
+  // 1. Camouflage Landing Page
+  const MASK_HTML = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head><meta charset="UTF-8"><title>Edge Delivery Network</title>
+    <style>body{font-family:sans-serif;padding:50px;background:#0f172a;color:#f8fafc}h1{color:#38bdf8}</style>
+    </head>
+    <body>
+      <h1>Node: Operational</h1>
+      <p>Global CDN edge status: <strong>Active</strong></p>
+      <p>Region: <strong>Europe-Frankfurt</strong></p>
+    </body>
+    </html>
+  `;
+
+  // 2. Routing Logic: Secret path check
+  if (!url.pathname.startsWith(`/${SECRET_PATH}`)) {
+    return new Response(MASK_HTML, { headers: { "content-type": "text/html" } });
   }
+
+  if (!TARGET) return new Response("Configuration Missing: Set TARGET_DOMAIN in Netlify", { status: 500 });
 
   try {
-    const url = new URL(request.url);
-    const targetUrl = TARGET_BASE + url.pathname + url.search;
+    const actualPath = url.pathname.replace(`/${SECRET_PATH}`, "");
+    const destination = `${TARGET}${actualPath}${url.search}`;
+    const targetHost = new URL(TARGET).host;
 
-    const headers = new Headers();
-    let clientIp = null;
+    const secureHeaders = new Headers(request.headers);
+    secureHeaders.set("Host", targetHost);
+    secureHeaders.set("X-Forwarded-Host", FAKE_SNI);
+    secureHeaders.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+    
+    // Scrub Netlify footprints
+    secureHeaders.delete("x-nf-edge-functions");
+    secureHeaders.delete("via");
 
-    for (const [key, value] of request.headers) {
-      const k = key.toLowerCase();
-      if (STRIP_HEADERS.has(k)) continue;
-      if (k.startsWith("x-nf-")) continue;
-      if (k.startsWith("x-netlify-")) continue;
-      if (k === "x-real-ip") {
-        clientIp = value;
-        continue;
-      }
-      if (k === "x-forwarded-for") {
-        if (!clientIp) clientIp = value;
-        continue;
-      }
-      headers.set(k, value);
-    }
-
-    if (clientIp) headers.set("x-forwarded-for", clientIp);
-
-    const method = request.method;
-    const hasBody = method !== "GET" && method !== "HEAD";
-
-    const fetchOptions = {
-      method,
-      headers,
-      redirect: "manual",
-    };
-
-    if (hasBody) {
-      fetchOptions.body = request.body;
-    }
-
-    const upstream = await fetch(targetUrl, fetchOptions);
-
-    const responseHeaders = new Headers();
-    for (const [key, value] of upstream.headers) {
-      if (key.toLowerCase() === "transfer-encoding") continue;
-      responseHeaders.set(key, value);
-    }
-
-    return new Response(upstream.body, {
-      status: upstream.status,
-      headers: responseHeaders,
+    const response = await fetch(destination, {
+      method: request.method,
+      headers: secureHeaders,
+      body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
+      redirect: "manual"
     });
-  } catch (error) {
-    return new Response("Bad Gateway: Relay Failed", { status: 502 });
+
+    const finalHeaders = new Headers(response.headers);
+    finalHeaders.set("Server", "nginx/1.24");
+
+    return new Response(response.body, {
+      status: response.status,
+      headers: finalHeaders
+    });
+
+  } catch (err) {
+    return new Response(null, { status: 502 });
   }
-}
+};
